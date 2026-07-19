@@ -1,5 +1,8 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <pthread.h>
 
 #define BUFFER_INTS (16UL * 1024UL * 1024UL)  /* 64 MB buffer */
@@ -26,6 +29,11 @@ void *worker(void *arg) {
         fclose(file);
         return NULL;
     }
+
+    /* Each thread reads its own slice strictly sequentially -- tell the
+     * kernel so it can keep readahead pipelined ahead of demand. */
+    posix_fadvise(fileno(file), (off_t)args->start_int * sizeof(int),
+                  (off_t)args->count_int * sizeof(int), POSIX_FADV_SEQUENTIAL);
 
     int *buf = malloc(BUFFER_INTS * sizeof(int));
     if (buf == NULL) {
