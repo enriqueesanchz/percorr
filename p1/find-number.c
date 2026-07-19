@@ -3,31 +3,56 @@
 #include <pthread.h>
 
 #define BUFFER_INTS (16UL * 1024UL * 1024UL)  /* 64 MB buffer */
+#define NTHREADS 4
 
 typedef struct {
-    FILE *file;
+    const char *filename;
     int needle;
+    long start_int;   /* index of first int this thread owns */
+    long count_int;   /* how many ints this thread owns */
 } worker_args;
 
 void *worker(void *arg) {
     worker_args *args = arg;
-    FILE *file = args->file;
-    int needle = args->needle;
+
+    FILE *file = fopen(args->filename, "rb");
+    if (file == NULL) {
+        perror("Error opening file");
+        return NULL;
+    }
+
+    if (fseeko(file, (off_t)args->start_int * sizeof(int), SEEK_SET) != 0) {
+        perror("Error seeking file");
+        fclose(file);
+        return NULL;
+    }
 
     int *buf = malloc(BUFFER_INTS * sizeof(int));
     if (buf == NULL) {
         perror("Error allocating buffer");
+        fclose(file);
         return NULL;
     }
 
-    size_t count;
-    while ((count = fread(buf, sizeof(int), BUFFER_INTS, file)) > 0) {
+    long remaining = args->count_int;
+    while (remaining > 0) {
+        size_t want = remaining < (long)BUFFER_INTS ? (size_t)remaining : BUFFER_INTS;
+        size_t count = fread(buf, sizeof(int), want, file);
+        if (count == 0)
+            break;
+
         for (size_t i = 0; i < count; i++)
-            if (buf[i] == needle)
+            if (buf[i] == args->needle)
                 printf("FOUND: %d\n", buf[i]);
+
+        remaining -= (long)count;
     }
 
+    if (ferror(file))
+        perror("Error reading file");
+
     free(buf);
+    fclose(file);
     return NULL;
 }
 
@@ -43,24 +68,39 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    worker_args args = { .file = file, .needle = atoi(argv[2]) };
-    const int nthreads = 1;
-    pthread_t threads[nthreads];
-
-    for (int i = 0; i < nthreads; i++) {
-        pthread_create(&threads[i], NULL, worker, &args);
-    }
-
-    for (int i = 0; i < nthreads; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    if (ferror(file)) {
-        perror("Error reading file");
+    if (fseeko(file, 0, SEEK_END) != 0) {
+        perror("Error seeking file");
         fclose(file);
         return 1;
     }
-
+    off_t size = ftello(file);
     fclose(file);
+
+    long total_ints = size / sizeof(int);
+    int needle = atoi(argv[2]);
+
+    worker_args args[NTHREADS];
+    pthread_t threads[NTHREADS];
+
+    long base = total_ints / NTHREADS;
+    long extra = total_ints % NTHREADS;
+    long next_start = 0;
+
+    for (int i = 0; i < NTHREADS; i++) {
+        long count = base + (i < extra ? 1 : 0);
+        args[i] = (worker_args){
+            .filename = argv[1],
+            .needle = needle,
+            .start_int = next_start,
+            .count_int = count,
+        };
+        next_start += count;
+        pthread_create(&threads[i], NULL, worker, &args[i]);
+    }
+
+    for (int i = 0; i < NTHREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
     return 0;
 }
