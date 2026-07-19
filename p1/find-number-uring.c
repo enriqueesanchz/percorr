@@ -10,8 +10,8 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <liburing.h>
-#if defined(__SSE2__)
-#include <emmintrin.h>
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
 #endif
 
 /* Single O_DIRECT fd + single io_uring ring, driven by one submitter that
@@ -95,21 +95,46 @@ typedef struct {
     size_t count;
 } filled_job;
 
-typedef struct {
-    ring *work_ring;
-    ring *free_ring;
-    int needle;
-} scanner_args;
-
 /* Scanning is currently fully hidden behind I/O wait on this hardware (see
  * problem.md), so this doesn't move wall-clock time on this machine -- it's
  * here for portability to faster storage (other laptops) where scanning
- * could become the bottleneck. SSE2 is part of the mandatory x86-64 ABI
- * baseline (every x86-64 CPU has it, no runtime feature detection or
- * special compile flags needed), so this is safe everywhere this project
- * already targets; non-x86 builds fall back to the plain scalar loop. */
-#if defined(__SSE2__)
-static void scan_buffer(const int *buf, size_t count, int needle) {
+ * could become the bottleneck, and different laptops can have very
+ * different CPUs. Rather than hardcode one ISA, pick the best one this
+ * process's CPU actually supports at startup and hand that choice down --
+ * resolved once, before the scanner thread is created, so there's no data
+ * race around a lazily-picked function pointer.
+ *
+ * AVX2 (8 ints/instruction) and SSE2 (4 ints/instruction) are hand-written
+ * separately rather than relying on the compiler to auto-widen one body,
+ * since GCC's function-multiversioning-by-redefinition (repeating the same
+ * function name under different `target` attributes) is a C++-only
+ * feature -- in C it's a redefinition error. SSE2 itself is part of the
+ * mandatory x86-64 ABI baseline (every x86-64 CPU has it), so the only
+ * real fallback case is non-x86 architectures, which get the plain scalar
+ * version. */
+typedef void (*scan_fn)(const int *buf, size_t count, int needle);
+
+#if defined(__x86_64__) || defined(__i386__)
+__attribute__((target("avx2")))
+static void scan_buffer_avx2(const int *buf, size_t count, int needle) {
+    __m256i needle_vec = _mm256_set1_epi32(needle);
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        __m256i data = _mm256_loadu_si256((const __m256i *)&buf[i]);
+        __m256i cmp = _mm256_cmpeq_epi32(data, needle_vec);
+        if (_mm256_movemask_epi8(cmp)) {
+            for (int j = 0; j < 8; j++)
+                if (buf[i + j] == needle)
+                    printf("FOUND: %d\n", buf[i + j]);
+        }
+    }
+    for (; i < count; i++)
+        if (buf[i] == needle)
+            printf("FOUND: %d\n", buf[i]);
+}
+
+__attribute__((target("sse2")))
+static void scan_buffer_sse2(const int *buf, size_t count, int needle) {
     __m128i needle_vec = _mm_set1_epi32(needle);
     size_t i = 0;
     for (; i + 4 <= count; i += 4) {
@@ -125,20 +150,37 @@ static void scan_buffer(const int *buf, size_t count, int needle) {
         if (buf[i] == needle)
             printf("FOUND: %d\n", buf[i]);
 }
-#else
-static void scan_buffer(const int *buf, size_t count, int needle) {
+#endif
+
+static void scan_buffer_scalar(const int *buf, size_t count, int needle) {
     for (size_t i = 0; i < count; i++)
         if (buf[i] == needle)
             printf("FOUND: %d\n", buf[i]);
 }
+
+static scan_fn resolve_scan_buffer(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    if (__builtin_cpu_supports("avx2"))
+        return scan_buffer_avx2;
+    if (__builtin_cpu_supports("sse2"))
+        return scan_buffer_sse2;
 #endif
+    return scan_buffer_scalar;
+}
+
+typedef struct {
+    ring *work_ring;
+    ring *free_ring;
+    int needle;
+    scan_fn scan;
+} scanner_args;
 
 void *scanner(void *arg) {
     scanner_args *args = arg;
     void *raw;
     while (ring_pop(args->work_ring, &raw)) {
         filled_job *j = raw;
-        scan_buffer(j->buf, j->count, args->needle);
+        args->scan(j->buf, j->count, args->needle);
         ring_push(args->free_ring, j->buf);
         free(j);
     }
@@ -271,7 +313,8 @@ int main(int argc, char *argv[]) {
         ring_push(&free_ring, buffers[i]);
     }
 
-    scanner_args sargs = { .work_ring = &work_ring, .free_ring = &free_ring, .needle = needle };
+    scanner_args sargs = { .work_ring = &work_ring, .free_ring = &free_ring, .needle = needle,
+                           .scan = resolve_scan_buffer() };
     pthread_t scanners[NSCANNERS];
     for (int i = 0; i < NSCANNERS; i++)
         pthread_create(&scanners[i], NULL, scanner, &sargs);
