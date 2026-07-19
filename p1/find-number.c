@@ -6,7 +6,7 @@
 #include <pthread.h>
 
 #define BUFFER_INTS (256UL * 1024UL)  /* 1 MB buffer -- fio's best-measured seq. read size */
-#define NTHREADS 4
+#define NTHREADS 8
 
 typedef struct {
     const char *filename;
