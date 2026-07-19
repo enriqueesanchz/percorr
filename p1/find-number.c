@@ -5,7 +5,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-#define BUFFER_INTS (16UL * 1024UL * 1024UL)  /* 64 MB buffer */
+#define BUFFER_INTS (256UL * 1024UL)  /* 1 MB buffer -- fio's best-measured seq. read size */
 #define NTHREADS 4
 
 typedef struct {
