@@ -7,11 +7,46 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 #define BUFFER_INTS (256UL * 1024UL)  /* 1 MB buffer -- fio's best-measured seq. read size */
 #define NTHREADS 8
 #define ALIGN_BYTES 4096UL
 #define ALIGN_INTS (ALIGN_BYTES / sizeof(int))  /* 1024 ints */
+
+/* Scanning is currently fully hidden behind I/O wait on this hardware (see
+ * problem.md), so this doesn't move wall-clock time on this machine -- it's
+ * here for portability to faster storage (other laptops) where scanning
+ * could become the bottleneck. SSE2 is part of the mandatory x86-64 ABI
+ * baseline (every x86-64 CPU has it, no runtime feature detection or
+ * special compile flags needed), so this is safe everywhere this project
+ * already targets; non-x86 builds fall back to the plain scalar loop. */
+#if defined(__SSE2__)
+static void scan_buffer(const int *buf, size_t count, int needle) {
+    __m128i needle_vec = _mm_set1_epi32(needle);
+    size_t i = 0;
+    for (; i + 4 <= count; i += 4) {
+        __m128i data = _mm_loadu_si128((const __m128i *)&buf[i]);
+        __m128i cmp = _mm_cmpeq_epi32(data, needle_vec);
+        if (_mm_movemask_epi8(cmp)) {
+            for (int j = 0; j < 4; j++)
+                if (buf[i + j] == needle)
+                    printf("FOUND: %d\n", buf[i + j]);
+        }
+    }
+    for (; i < count; i++)
+        if (buf[i] == needle)
+            printf("FOUND: %d\n", buf[i]);
+}
+#else
+static void scan_buffer(const int *buf, size_t count, int needle) {
+    for (size_t i = 0; i < count; i++)
+        if (buf[i] == needle)
+            printf("FOUND: %d\n", buf[i]);
+}
+#endif
 
 typedef struct {
     const char *filename;
@@ -62,9 +97,7 @@ void *worker(void *arg) {
         if (count > (size_t)remaining)
             count = (size_t)remaining;
 
-        for (size_t i = 0; i < count; i++)
-            if (buf[i] == args->needle)
-                printf("FOUND: %d\n", buf[i]);
+        scan_buffer(buf, count, args->needle);
 
         offset += (off_t)count * sizeof(int);
         remaining -= (long)count;
