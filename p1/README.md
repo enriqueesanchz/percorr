@@ -120,6 +120,28 @@ heatmaps, and a top-20 configuration bar chart. On the reference machine the
 best combo was `bs=256k qd=32 nj=1` → 3434 MB/s, implying a ~10.0 s floor for a
 32 GB scan; `find-number-uring.out` reaches 10.23 s.
 
+`plot_results.py` accepts optional `<results_dir> <plots_dir>` args (default
+`results/fio_results` / `results/fio_plots`) so a differently-located sweep
+(e.g. a rotational disk's, see below) can be plotted without overwriting the
+originals.
+
+### Rotational disk (HDD)
+
+`bench-hdd.sh` is a trimmed variant for spinning/USB-attached disks: many
+such drives cap their block-layer queue at `nr_requests=2`
+(`/sys/block/<dev>/queue/nr_requests`), so sweeping iodepth up to 256 and
+numjobs up to 4 like `bench.sh` does just burns hours for no new signal.
+It sweeps block size × iodepth 1/2/4 × numjobs 1/2 (30 combinations, ~15-20
+min) against a file path passed as its first argument:
+
+```bash
+./bench-hdd.sh /path/to/input_data.out
+./venv/bin/python plot_results.py results/fio_results_hdd results/fio_plots_hdd
+```
+
+See `problem.md` for a full HDD write-up and comparison against the SSD
+results.
+
 ## Repository layout
 
 ```
@@ -128,9 +150,10 @@ create-input-data.c     generate the test file
 read-input-data.c       sequential read sanity check
 find-number*.c          the five search implementations
 compare.sh              cold-cache round-robin benchmark harness
-bench.sh                fio sweep over bs x iodepth x numjobs
-plot_results.py         turn fio JSON into plots
-results/                fio_results/ (JSON) and fio_plots/ (PNG)
+bench.sh                fio sweep over bs x iodepth x numjobs (SSD)
+bench-hdd.sh            trimmed fio sweep for rotational/USB disks
+plot_results.py         turn fio JSON into plots (accepts results/plots dir args)
+results/                fio_results/ + fio_plots/ (SSD), fio_results_hdd/ + fio_plots_hdd/ (HDD)
 ```
 
 Build artifacts (`*.out`), `results/` and `venv/` are gitignored — note that

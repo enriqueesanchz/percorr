@@ -23,11 +23,11 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-RESULTS_DIR = Path("results/fio_results")
-PLOTS_DIR = Path("results/fio_plots")
-PLOTS_DIR.mkdir(exist_ok=True)
+RESULTS_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/fio_results")
+PLOTS_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("results/fio_plots")
+PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-BS_ORDER = ["4k", "16k", "64k", "256k", "1m", "4m"]
+BS_ORDER = ["4k", "16k", "64k", "256k", "1m", "4m", "8m", "16m"]
 
 
 def bs_to_bytes(bs: str) -> int:
